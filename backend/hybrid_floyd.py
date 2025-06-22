@@ -24,21 +24,24 @@ def build_graph():
     N = GRID_ROWS * GRID_COLS
     adj = np.full((N, N), np.inf)
 
-    # Add shelves as obstacles
-    shelves = {(4, 4), (4, 5), (5, 4), (5, 5)}  # block these 4 cells
+    # 🟫 Shelves (same as frontend)
+    shelves = {
+        (4, 4), (4, 5), (5, 4), (5, 5),
+        (2, 2), (2, 3), (2, 4),
+        (7, 6), (7, 7), (7, 8)
+    }
 
     for x in range(GRID_ROWS):
         for y in range(GRID_COLS):
             if (x, y) in shelves:
-                continue
+                continue  # Skip adding edges from a shelf cell
             a = node_id(x, y)
             for dx, dy in DIRS:
                 nx, ny = x + dx, y + dy
                 if in_bounds(nx, ny) and (nx, ny) not in shelves:
                     b = node_id(nx, ny)
-                    adj[a][b] = 1
+                    adj[a][b] = 1  # Valid movement
     return adj
-
 
 
 def floyd_with_path(adj):
