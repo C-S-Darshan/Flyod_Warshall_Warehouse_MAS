@@ -261,6 +261,16 @@ def animate_sim(agents_data, conflicts, logs):
     for y, x in SHELVES:
         ax.add_patch(plt.Rectangle((x - 0.5, y - 0.5), 1, 1, color="black", alpha=0.7))
 
+    # Draw the full precalculated Floyd paths (before animation starts)
+    for i, agent in enumerate(agents_data):
+        color = COLORS[i % len(COLORS)]
+        if agent["path"]: # Ensure path exists
+            # Use the original path stored if rerouted, otherwise the main path
+            floyd_path_coords = agent["original"] if agent.get("rerouted") else agent["path"]
+            if floyd_path_coords:
+                ax.plot([x for _, x in floyd_path_coords], [y for y, _ in floyd_path_coords], 
+                        color=color, alpha=0.2, linestyle=':', linewidth=1) # Thinner, dotted line
+
     # Agent dots and labels
     dots = []
     labels = []
@@ -326,6 +336,7 @@ def animate_sim(agents_data, conflicts, logs):
                     path_before_reroute = original_segment_coords
                     
                     # Path segment after reroute (from the start of the new path)
+                    # Adjust index for new_full_path_coords as it starts from the reroute point
                     idx_in_new_path = frame - reroute_time
                     if idx_in_new_path >= 0 and idx_in_new_path < len(new_full_path_coords):
                         path_after_reroute = new_full_path_coords[:idx_in_new_path + 1]
