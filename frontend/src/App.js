@@ -34,58 +34,73 @@ function App() {
   const [isSimLoaded, setIsSimLoaded] = useState(false);
 
   // 🎨 Draw everything on canvas
+  // 🎨 Draw everything on canvas
   useEffect(() => {
-    const ctx = canvasRef.current.getContext("2d");
-    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  const ctx = canvasRef.current.getContext("2d");
+  ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
-    // Draw grid
-    ctx.strokeStyle = "#aaa";
-    for (let r = 0; r < ROWS; r++) {
-      for (let c = 0; c < COLS; c++) {
-        ctx.strokeRect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-      }
+  // Draw grid
+  ctx.strokeStyle = "#aaa";
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      ctx.strokeRect(c * CELL_SIZE, r * CELL_SIZE, CELL_SIZE, CELL_SIZE);
     }
+  }
 
-    // Draw shelves
-    SHELVES.forEach((coord) => {
-      const [y, x] = coord.split(",").map(Number);
-      ctx.fillStyle = "#666";
+  // Draw shelves
+  SHELVES.forEach((coord) => {
+    const [y, x] = coord.split(",").map(Number);
+    ctx.fillStyle = "#666";
+    ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+  });
+
+  // Draw agent paths (trails with agent color)
+  agents.forEach((agent, i) => {
+    const [r, g, b] = getRGBFromColor(AGENT_COLORS[i % AGENT_COLORS.length]);
+
+    // Trail fill
+    ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.2)`;
+    agent.path.forEach(([y, x]) => {
       ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
     });
 
-    // Draw agent paths (trail)
-    agents.forEach((agent, i) => {
-      const [r, g, b] = getRGBFromColor(AGENT_COLORS[i % AGENT_COLORS.length]);
-      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.2)`; // transparent trail
+    // Optional dashed stroke if rerouted
+    if (agent.rerouted) {
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, 0.8)`;
+      ctx.setLineDash([4, 4]);
       agent.path.forEach(([y, x]) => {
-        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
+        ctx.strokeRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
       });
-    });
-
-    // Draw time-window conflicts
-    if (conflictMap[currentTime]) {
-      ctx.fillStyle = "rgba(255, 0, 0, 0.5)";
-      conflictMap[currentTime].forEach(([y, x]) => {
-        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-      });
+      ctx.setLineDash([]);
     }
+  });
 
-    // Draw agents
-    agents.forEach((agent, i) => {
-      const step = Math.min(agent.step, agent.path.length - 1);
-      const [y, x] = agent.path[step];
-      ctx.fillStyle = AGENT_COLORS[i % AGENT_COLORS.length];
-      ctx.beginPath();
-      ctx.arc(
-        x * CELL_SIZE + CELL_SIZE / 2,
-        y * CELL_SIZE + CELL_SIZE / 2,
-        CELL_SIZE / 4,
-        0,
-        Math.PI * 2
-      );
-      ctx.fill();
+  // Draw time-window conflicts
+  if (conflictMap[currentTime]) {
+    ctx.fillStyle = "rgba(255, 0, 0, 0.5)";
+    conflictMap[currentTime].forEach(([y, x]) => {
+      ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
     });
-  }, [currentTime, agents, conflictMap]);
+  }
+
+  // Draw agents
+  agents.forEach((agent, i) => {
+    const step = Math.min(agent.step, agent.path.length - 1);
+    const [y, x] = agent.path[step];
+    ctx.fillStyle = AGENT_COLORS[i % AGENT_COLORS.length];
+    ctx.beginPath();
+    ctx.arc(
+      x * CELL_SIZE + CELL_SIZE / 2,
+      y * CELL_SIZE + CELL_SIZE / 2,
+      CELL_SIZE / 4,
+      0,
+      Math.PI * 2
+    );
+    ctx.fill();
+  });
+}, [currentTime, agents, conflictMap]);
+
+
 
   // 🟢 Load simulation paths
   const startSimulation = async () => {
@@ -115,7 +130,9 @@ function App() {
       const initializedAgents = data.agents.map((agent) => ({
         ...agent,
         step: 0,
+        rerouted: agent.rerouted || false,
       }));
+
 
       setAgents(initializedAgents);
       setConflictMap(data.conflicts || {});

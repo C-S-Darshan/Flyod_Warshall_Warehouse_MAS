@@ -129,6 +129,7 @@ def compute_paths(data):
 
         if not conflict:
             final_path = path_to_coords(path_ids)
+            rerouted = False
         else:
             # reroute with local Dijkstra avoiding occupied nodes
             occupied = {t: set(time_window.get(t, {}).keys()) for t in range(MAX_TIME)}
@@ -138,11 +139,14 @@ def compute_paths(data):
                     time_window[t] = {}
                 time_window[t][node] = agent_id
             final_path = path_to_coords(new_path_ids)
+            rerouted = True
 
         results.append({
             "id": agent_id,
-            "path": final_path
-        })
+            "path": final_path,
+            "rerouted": rerouted
+    })
+
 
     visual_conflicts = {
         int(t): [list(id_to_coord(int(n))) for n in nodes]
