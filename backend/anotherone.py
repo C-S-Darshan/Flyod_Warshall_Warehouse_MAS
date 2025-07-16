@@ -13,6 +13,7 @@ SHELVES = {
     (7, 2), (7, 3),
     (7, 6), (7, 7)
 }
+# Using the original agent list that was previously impossible
 AGENTS = [
     {"id": "A", "start": (0, 0), "goal": (9, 9)},
     {"id": "B", "start": (0, 9), "goal": (9, 0)},
@@ -40,17 +41,16 @@ def id_to_coord(id_):
 
 def build_graph():
     """
-    Builds the adjacency matrix for the warehouse graph based on unidirectional lanes,
-    as described in the research paper.
-    - Even rows: Move right ->
-    - Odd rows:  Move left  <-
-    - Even cols: Move down  v
-    - Odd cols:  Move up    ^
-    Agents can turn at any valid (non-shelf) intersection.
+    Builds an adjacency matrix where all 4 moves are possible, but moving
+    against the designated "flow" of a lane has a higher cost. This ensures
+    all nodes are reachable while still encouraging efficient routing.
     """
     N = ROWS * COLS
     adj = np.full((N, N), np.inf)
     
+    COST_WITH_FLOW = 1.0  # Lower cost for following the lane rule
+    COST_AGAINST_FLOW = 1.5 # Higher cost for going against the lane rule
+
     for r in range(ROWS):
         for c in range(COLS):
             if (r, c) in SHELVES:
@@ -59,24 +59,25 @@ def build_graph():
             current_node_id = node_id(r, c)
             adj[current_node_id, current_node_id] = 0
 
-            # Determine possible moves based on unidirectional lanes
-            possible_moves = []
-            # Horizontal movement
-            if r % 2 == 0: # Even row, move right
-                possible_moves.append((r, c + 1))
-            else: # Odd row, move left
-                possible_moves.append((r, c - 1))
-            
-            # Vertical movement
-            if c % 2 == 0: # Even col, move down
-                possible_moves.append((r + 1, c))
-            else: # Odd col, move up
-                possible_moves.append((r - 1, c))
-                
-            for nr, nc in possible_moves:
+            # Consider all four possible directions
+            for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]: # Right, Left, Down, Up
+                nr, nc = r + dr, c + dc
+
                 if in_bounds(nr, nc) and (nr, nc) not in SHELVES:
                     neighbor_id = node_id(nr, nc)
-                    adj[current_node_id, neighbor_id] = 1 # Unit cost
+                    cost = COST_WITH_FLOW
+                    
+                    # Check if the move is against the flow and assign higher cost
+                    if dr == 1: # Moving Down...
+                        if c % 2 != 0: cost = COST_AGAINST_FLOW # ...in an 'up' column
+                    elif dr == -1: # Moving Up...
+                        if c % 2 == 0: cost = COST_AGAINST_FLOW # ...in a 'down' column
+                    elif dc == 1: # Moving Right...
+                        if r % 2 != 0: cost = COST_AGAINST_FLOW # ...in a 'left' row
+                    elif dc == -1: # Moving Left...
+                        if r % 2 == 0: cost = COST_AGAINST_FLOW # ...in a 'right' row
+                    
+                    adj[current_node_id, neighbor_id] = cost
     return adj
 
 def floyd_with_path(adj):
@@ -144,7 +145,6 @@ def dijkstra_with_avoidance(start_id, goal_id, start_time, occupied_at_time, max
         r, c = id_to_coord(current_id)
         
         # Consider all physically possible moves from the current node
-        # This is different from build_graph, as we need to explore all directions for rerouting
         for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
             nr, nc = r + dr, c + dc
             
@@ -176,17 +176,13 @@ def simulate_paths():
     adj = build_graph()
     _, next_node_matrix = floyd_with_path(adj)
     
-    # {time_step: {node_id: agent_id}}
     time_window = {}
-    # {time_step: [(r, c), ...]} for visualization
     conflict_markers = {}
-    
     logs = []
     final_agent_paths = []
     
     max_path_len_estimate = ROWS * COLS 
 
-    # Sequentially plan for each agent
     for agent_config in AGENTS:
         agent_id = agent_config["id"]
         start_id = node_id(*agent_config["start"])
@@ -200,7 +196,6 @@ def simulate_paths():
             continue
 
         conflict_time = -1
-        # Check initial path for conflicts against the master time_window
         for t, node in enumerate(initial_path_ids):
             if node in time_window.get(t, {}):
                 conflict_time = t
@@ -210,7 +205,6 @@ def simulate_paths():
                 conflict_markers.setdefault(t, []).append(conflict_coord)
                 break
         
-        # --- PATH DETERMINATION ---
         final_path_ids = []
         is_rerouted = False
         reroute_data = {}
@@ -221,11 +215,11 @@ def simulate_paths():
             is_rerouted = False
         else: # Conflict found, must reroute
             reroute_start_time = conflict_time - 1
+            if reroute_start_time < 0: reroute_start_time = 0 # handle conflict at t=0
             reroute_start_node = initial_path_ids[reroute_start_time]
             
             logs.append(f"🔄 Rerouting Agent {agent_id} from node {id_to_coord(reroute_start_node)} at t={reroute_start_time}.")
 
-            # Build occupied map for Dijkstra
             occupied_for_dijkstra = {t: set(nodes.keys()) for t, nodes in time_window.items()}
             
             new_path_segment = dijkstra_with_avoidance(
@@ -234,7 +228,6 @@ def simulate_paths():
             
             if new_path_segment:
                 original_segment = initial_path_ids[:reroute_start_time]
-                # The new segment from Dijkstra starts at the reroute node, so it naturally connects
                 final_path_ids = original_segment + new_path_segment
                 is_rerouted = True
                 reroute_data = {
@@ -243,19 +236,14 @@ def simulate_paths():
                     "dijkstra_segment": path_to_coords(new_path_segment)
                 }
                 logs.append(f"✅ Agent {agent_id} rerouted successfully. New path length: {len(final_path_ids)}.")
-            else: # Rerouting failed, agent will wait
+            else: 
                 logs.append(f"❌ Rerouting failed for Agent {agent_id}. Agent will wait at conflict point.")
-                # Simple wait strategy: stay at node before conflict
                 wait_time = 1 
                 path_before_conflict = initial_path_ids[:conflict_time]
                 path_after_conflict = initial_path_ids[conflict_time:]
-                
                 final_path_ids = path_before_conflict + [path_before_conflict[-1]] * wait_time + path_after_conflict
-                # For simplicity, we just log this and don't add complex wait-and-recheck logic
-                # The visualization will show the agent pausing.
-                is_rerouted = False # Technically not rerouted, just delayed.
+                is_rerouted = False 
         
-        # Commit the final, conflict-free path to the master time_window
         for t, node in enumerate(final_path_ids):
             time_window.setdefault(t, {})[node] = agent_id
         
@@ -269,10 +257,9 @@ def simulate_paths():
         
         final_agent_paths.append(agent_result)
 
-    # Determine actual max time for animation from the longest final path
     max_time = 0
     if final_agent_paths:
-        max_time = max(len(p["path"]) for p in final_agent_paths if p["path"])
+        max_time = max((len(p["path"]) for p in final_agent_paths if p["path"]), default=0)
         
     return final_agent_paths, conflict_markers, logs, max_time, next_node_matrix
 
@@ -288,16 +275,14 @@ def animate_sim(agents_data, conflicts, logs, max_time, next_node_matrix):
     ax.set_ylim(-0.5, ROWS - 0.5)
     ax.set_aspect("equal")
     plt.gca().invert_yaxis()
-    ax.set_title("Hybrid Floyd-Dijkstra Warehouse Simulation")
+    ax.set_title("Hybrid Floyd-Dijkstra Warehouse Simulation (Bidirectional)")
     ax.set_xticks(np.arange(-0.5, COLS, 1), minor=True)
     ax.set_yticks(np.arange(-0.5, ROWS, 1), minor=True)
     ax.grid(which='minor', color='lightgray', linestyle='-', linewidth=0.5)
 
-    # Draw shelves
     for r, c in SHELVES:
         ax.add_patch(plt.Rectangle((c - 0.5, r - 0.5), 1, 1, color="black", alpha=0.8, zorder=2))
 
-    # Draw the full pre-calculated Floyd paths as background
     for i, agent_config in enumerate(AGENTS):
         color = COLORS[i % len(COLORS)]
         start_id = node_id(*agent_config["start"])
@@ -309,7 +294,6 @@ def animate_sim(agents_data, conflicts, logs, max_time, next_node_matrix):
             ax.plot([c for r, c in coords], [r for r, c in coords], 
                     color=color, alpha=0.3, linestyle=':', linewidth=2, zorder=1)
 
-    # Artists for animation
     agent_dots = []
     agent_labels = []
     solid_path_lines = []
@@ -332,24 +316,20 @@ def animate_sim(agents_data, conflicts, logs, max_time, next_node_matrix):
     time_text = ax.text(0.01, 0.98, "", transform=ax.transAxes, fontsize=14, verticalalignment='top', bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.5))
     conflict_rects = []
 
-    # --- SLIDER AND UPDATE LOGIC ---
     ax_slider = plt.axes([0.15, 0.05, 0.7, 0.03], facecolor='lightgoldenrodyellow')
     time_slider = Slider(ax_slider, 'Time', 0, max_time -1, valinit=0, valstep=1)
 
     def update(frame):
         frame = int(frame)
-        # Clear previous conflict markers
         while conflict_rects:
             conflict_rects.pop().remove()
 
-        # Add new conflict markers for the current frame
         if frame in conflicts:
             for r, c in conflicts[frame]:
                 rect = plt.Rectangle((c - 0.5, r - 0.5), 1, 1, color='red', alpha=0.6, zorder=4, ec='black')
                 ax.add_patch(rect)
                 conflict_rects.append(rect)
 
-        # Update agents
         for i, agent in enumerate(agents_data):
             path = agent["path"]
             if not path: continue
@@ -359,26 +339,22 @@ def animate_sim(agents_data, conflicts, logs, max_time, next_node_matrix):
             agent_dots[i].set_data([c], [r])
             agent_labels[i].set_position((c, r))
             
-            # Draw path segments
             if agent["rerouted"]:
                 reroute_time = agent["reroute_time"]
-                
-                # Solid part (original path before reroute)
-                solid_segment_end = min(frame + 1, reroute_time)
+                solid_segment_end = min(frame + 1, reroute_time + 1)
                 solid_coords = agent["original_segment"][:solid_segment_end]
                 if solid_coords:
                     solid_path_lines[i].set_data([sc for sr, sc in solid_coords], [sr for sr, sc in solid_coords])
                 
-                # Dashed part (Dijkstra reroute)
                 if frame >= reroute_time:
                     dashed_segment_end = frame - reroute_time + 1
                     dashed_coords = agent["dijkstra_segment"][:dashed_segment_end]
                     if dashed_coords:
                          dashed_path_lines[i].set_data([dc for dr, dc in dashed_coords], [dr for dr, dc in dashed_coords])
-                else: # Clear dashed line if before reroute time
+                else: 
                     dashed_path_lines[i].set_data([], [])
 
-            else: # Not rerouted, path is all solid
+            else: 
                 path_to_draw = path[:frame + 1]
                 solid_path_lines[i].set_data([sc for sr, sc in path_to_draw], [sr for sr, sc in path_to_draw])
         
@@ -386,13 +362,7 @@ def animate_sim(agents_data, conflicts, logs, max_time, next_node_matrix):
         fig.canvas.draw_idle()
 
     time_slider.on_changed(update)
-    update(0) # Initial draw
-
-    # To create a playable animation file (e.g., mp4), uncomment the following lines:
-    # print("\nGenerating animation... This may take a moment.")
-    # ani = animation.FuncAnimation(fig, lambda f: update(f), frames=max_time, interval=200, blit=False)
-    # ani.save('hybrid_floyd_simulation.mp4', writer='ffmpeg', fps=5)
-    # print("Animation saved to hybrid_floyd_simulation.mp4")
+    update(0) 
 
     plt.show()
 
