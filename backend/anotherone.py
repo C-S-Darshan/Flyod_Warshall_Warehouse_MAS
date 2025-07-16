@@ -2,414 +2,407 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import heapq
-from matplotlib.widgets import Slider # Import Slider
+from matplotlib.widgets import Slider
 
-# Config
+# --- CONFIGURATION ---
 ROWS, COLS = 10, 10
-MAX_TIME = 30
 SHELVES = {
-    (4, 4), (4, 5), (5, 4), (5, 5),
-    (2, 2), (2, 3), (2, 4),
-    (7, 6), (7, 7), (7, 8)
+    (2, 2), (2, 3), 
+    (4, 1), (4, 2),
+    (4, 6), (4, 7), (4, 8),
+    (7, 2), (7, 3),
+    (7, 6), (7, 7)
 }
-DIRS = [(-1, 0), (1, 0), (0, -1), (0, 1)] # Directions: Up, Down, Left, Right
 AGENTS = [
     {"id": "A", "start": (0, 0), "goal": (9, 9)},
     {"id": "B", "start": (0, 9), "goal": (9, 0)},
-    {"id": "C", "start": (9, 0), "goal": (0, 9)},
-    {"id": "D", "start": (9, 9), "goal": (0, 0)},
-    {"id": "E", "start": (5, 0), "goal": (5, 9)},
+    {"id": "C", "start": (5, 0), "goal": (5, 9)},
+    {"id": "D", "start": (9, 4), "goal": (0, 4)},
+    {"id": "E", "start": (8, 0), "goal": (1, 8)},
 ]
-COLORS = ["red", "blue", "green", "orange", "purple"]
+COLORS = ["red", "blue", "green", "orange", "purple", "brown", "pink"]
 
-def in_bounds(x, y):
+# --- HELPER FUNCTIONS ---
+
+def in_bounds(r, c):
     """Checks if a given coordinate is within the grid boundaries."""
-    return 0 <= x < ROWS and 0 <= y < COLS
+    return 0 <= r < ROWS and 0 <= c < COLS
 
-def node_id(x, y):
-    """Converts (x, y) coordinates to a unique node ID."""
-    return x * COLS + y
+def node_id(r, c):
+    """Converts (row, col) coordinates to a unique node ID."""
+    return r * COLS + c
 
 def id_to_coord(id_):
-    """Converts a node ID back to (x, y) coordinates."""
+    """Converts a node ID back to (row, col) coordinates."""
     return divmod(id_, COLS)
+
+# --- GRAPH AND PATHFINDING LOGIC ---
 
 def build_graph():
     """
-    Builds the adjacency matrix for the warehouse graph.
-    Shelves are considered obstacles (no edges through them).
+    Builds the adjacency matrix for the warehouse graph based on unidirectional lanes,
+    as described in the research paper.
+    - Even rows: Move right ->
+    - Odd rows:  Move left  <-
+    - Even cols: Move down  v
+    - Odd cols:  Move up    ^
+    Agents can turn at any valid (non-shelf) intersection.
     """
     N = ROWS * COLS
-    adj = np.full((N, N), np.inf) # Initialize with infinity for no connection
-    for x in range(ROWS):
-        for y in range(COLS):
-            if (x, y) in SHELVES:
-                continue # Cannot move through shelves
-            a = node_id(x, y)
-            adj[a][a] = 0 # Distance to self is 0
+    adj = np.full((N, N), np.inf)
+    
+    for r in range(ROWS):
+        for c in range(COLS):
+            if (r, c) in SHELVES:
+                continue
+            
+            current_node_id = node_id(r, c)
+            adj[current_node_id, current_node_id] = 0
 
-            for dx, dy in DIRS:
-                nx, ny = x + dx, y + dy
-                if in_bounds(nx, ny) and (nx, ny) not in SHELVES:
-                    b = node_id(nx, ny)
-                    adj[a][b] = 1 # Unit cost for moving to adjacent node
+            # Determine possible moves based on unidirectional lanes
+            possible_moves = []
+            # Horizontal movement
+            if r % 2 == 0: # Even row, move right
+                possible_moves.append((r, c + 1))
+            else: # Odd row, move left
+                possible_moves.append((r, c - 1))
+            
+            # Vertical movement
+            if c % 2 == 0: # Even col, move down
+                possible_moves.append((r + 1, c))
+            else: # Odd col, move up
+                possible_moves.append((r - 1, c))
+                
+            for nr, nc in possible_moves:
+                if in_bounds(nr, nc) and (nr, nc) not in SHELVES:
+                    neighbor_id = node_id(nr, nc)
+                    adj[current_node_id, neighbor_id] = 1 # Unit cost
     return adj
 
 def floyd_with_path(adj):
     """
-    Implements the Floyd-Warshall algorithm to find all-pairs shortest paths
-    and reconstruct paths.
-    Returns the distance matrix and the path reconstruction matrix.
+    Implements the Floyd-Warshall algorithm.
+    Returns the distance matrix and the 'next_node' matrix for path reconstruction.
     """
     N = adj.shape[0]
     dist = adj.copy()
-    path = np.full((N, N), -1) # Stores the intermediate node in the shortest path
+    next_node_matrix = np.full((N, N), -1, dtype=int)
 
-    # Initialize path matrix for direct connections
     for i in range(N):
         for j in range(N):
-            if adj[i][j] == 1: # If directly connected
-                path[i][j] = j # Next hop is the destination itself
+            if adj[i, j] != np.inf and i != j:
+                next_node_matrix[i, j] = j
 
-    for k in range(N): # Intermediate node
-        for i in range(N): # Start node
-            for j in range(N): # End node
-                if dist[i][k] != np.inf and dist[k][j] != np.inf: # Avoid infinity arithmetic
-                    if dist[i][k] + dist[k][j] < dist[i][j]:
-                        dist[i][j] = dist[i][k] + dist[k][j]
-                        path[i][j] = path[i][k] # Update next hop from i to j via k
+    for k in range(N):
+        for i in range(N):
+            for j in range(N):
+                if dist[i, k] != np.inf and dist[k, j] != np.inf:
+                    if dist[i, k] + dist[k, j] < dist[i, j]:
+                        dist[i, j] = dist[i, k] + dist[k, j]
+                        next_node_matrix[i, j] = next_node_matrix[i, k]
+    return dist, next_node_matrix
 
-    return dist, path
-
-def reconstruct_path(i, j, path_matrix):
+def reconstruct_path(start_id, goal_id, next_node_matrix):
     """
-    Reconstructs the shortest path from node i to node j using the path_matrix.
+    Reconstructs the shortest path from a start to a goal node
+    using the 'next_node' matrix from Floyd-Warshall.
     """
-    if i == j:
-        return [i]
-    if path_matrix[i][j] == -1: # No path found by Floyd-Warshall
-        return []
+    if next_node_matrix[start_id, goal_id] == -1:
+        return [] # No path exists
 
-    path = [i]
-    current = i
-    while current != j:
-        next_node = path_matrix[current][j]
-        if next_node == -1: # Should not happen if path_matrix[i][j] was not -1 initially
-            return [] # Indicates an issue in path reconstruction or matrix
-        path.append(next_node)
-        current = next_node
+    path = [start_id]
+    current_id = start_id
+    while current_id != goal_id:
+        current_id = next_node_matrix[current_id, goal_id]
+        if current_id == -1: return [] # Should not happen if path exists
+        path.append(current_id)
     return path
 
-
 def path_to_coords(path_ids):
-    """Converts a list of node IDs to a list of (x, y) coordinates."""
+    """Converts a list of node IDs to a list of (row, col) coordinates."""
     return [id_to_coord(n) for n in path_ids]
 
-def dijkstra_with_avoidance(start_id, goal_id, occupied_at_time):
+def dijkstra_with_avoidance(start_id, goal_id, start_time, occupied_at_time, max_time):
     """
-    Implements Dijkstra's algorithm to find a path from start to goal,
-    avoiding nodes occupied by other agents at specific time steps.
-    `occupied_at_time`: A dictionary where keys are time steps and values are sets of occupied node IDs.
+    Finds a path from start to goal, avoiding nodes occupied by other agents.
+    This is a time-aware Dijkstra's algorithm (or A* with h=0).
+    - occupied_at_time: {time_step: {occupied_node_id, ...}}
     """
-    visited = set() # Stores (node_id, time_step) to avoid cycles and re-exploring
-    pq = [(0, start_id, [start_id])] # (cost, current_node_id, path_list)
+    pq = [(start_time, start_id, [start_id])] # (cost, current_node_id, path_list)
+    visited = set() # Stores (node_id, time_step)
 
     while pq:
         cost, current_id, path = heapq.heappop(pq)
 
         if current_id == goal_id:
-            return path # Found shortest path
+            return path
 
-        # Check if this (node, time) state has already been visited with a shorter or equal path
         if (current_id, cost) in visited:
             continue
         visited.add((current_id, cost))
 
-        x, y = id_to_coord(current_id)
+        r, c = id_to_coord(current_id)
+        
+        # Consider all physically possible moves from the current node
+        # This is different from build_graph, as we need to explore all directions for rerouting
+        for dr, dc in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+            nr, nc = r + dr, c + dc
+            
+            if in_bounds(nr, nc) and (nr, nc) not in SHELVES:
+                neighbor_id = node_id(nr, nc)
+                next_time = cost + 1
 
-        for dx, dy in DIRS:
-            nx, ny = x + dx, y + dy
-            if in_bounds(nx, ny) and (nx, ny) not in SHELVES:
-                neighbor_id = node_id(nx, ny)
-                next_time = cost + 1 # Each step takes 1 unit of time
-
-                # Check for time window conflict: is the neighbor occupied at the next time step?
+                if next_time >= max_time * 2: # Limit search to prevent long detours
+                    continue
+                
+                # Check for time-window conflict
                 if neighbor_id in occupied_at_time.get(next_time, set()):
-                    continue # Skip this path if the next node is occupied
+                    continue
 
                 heapq.heappush(pq, (next_time, neighbor_id, path + [neighbor_id]))
-    return [start_id] # Return start node if no path found
+    
+    return None # No path found
+
+# --- SIMULATION ORCHESTRATOR ---
 
 def simulate_paths():
     """
-    Simulates agent movement, detects conflicts, and recalculates paths.
+    Orchestrates the hybrid simulation:
+    1. Pre-calculates all paths with Floyd-Warshall.
+    2. Sequentially plans for each agent.
+    3. Checks for conflicts in the time-window.
+    4. Reroutes with Dijkstra if a conflict is found.
     """
-    global adj # Use global adj matrix for path reconstruction in Floyd
     adj = build_graph()
-    dist, path_matrix = floyd_with_path(adj)
+    _, next_node_matrix = floyd_with_path(adj)
     
-    # time_window: {time_step: {node_id: agent_id}}
-    # This records the final planned occupancy for each node at each time step.
-    time_window = {} 
+    # {time_step: {node_id: agent_id}}
+    time_window = {}
+    # {time_step: [(r, c), ...]} for visualization
+    conflict_markers = {}
     
-    # conflict_visuals: {time_step: [(x,y), (x,y), ...]}
-    # Stores coordinates of nodes where conflicts were detected for visualization.
-    conflict_visuals = {} 
+    logs = []
+    final_agent_paths = []
     
-    logs = [] # Log messages for conflicts and rerouting
-    results = [] # Final planned paths for all agents
+    max_path_len_estimate = ROWS * COLS 
 
-    for i, agent_config in enumerate(AGENTS):
-        sid = node_id(*agent_config["start"])
-        gid = node_id(*agent_config["goal"])
+    # Sequentially plan for each agent
+    for agent_config in AGENTS:
+        agent_id = agent_config["id"]
+        start_id = node_id(*agent_config["start"])
+        goal_id = node_id(*agent_config["goal"])
 
-        # Initial path calculation using Floyd-Warshall
-        initial_path_ids = reconstruct_path(sid, gid, path_matrix)
+        initial_path_ids = reconstruct_path(start_id, goal_id, next_node_matrix)
         
-        # Check for conflicts with already planned agents (time window)
-        conflict_detected_for_agent = False
-        reroute_time = 0 # The time at which the agent needs to be rerouted
+        if not initial_path_ids:
+            logs.append(f"❌ Agent {agent_id}: No initial path found from {agent_config['start']} to {agent_config['goal']}.")
+            final_agent_paths.append({"id": agent_id, "path": [], "rerouted": False})
+            continue
 
-        # Simulate agent's initial path to check for conflicts
-        # We only check up to MAX_TIME to prevent infinite loops for very long paths
-        for t, node_id_on_path in enumerate(initial_path_ids):
-            if t >= MAX_TIME: # Prevent planning beyond MAX_TIME
-                break 
-            if node_id_on_path in time_window.get(t, {}):
-                conflict_detected_for_agent = True
-                conflict_agent_id = time_window[t][node_id_on_path]
-                conflict_visuals.setdefault(t, []).append(id_to_coord(node_id_on_path))
-                logs.append(f"⚠ Conflict at {id_to_coord(node_id_on_path)} on t={t} between {agent_config['id']} and {conflict_agent_id}")
-                reroute_time = t # Mark the time of conflict
-                break # Conflict found, need to reroute
+        conflict_time = -1
+        # Check initial path for conflicts against the master time_window
+        for t, node in enumerate(initial_path_ids):
+            if node in time_window.get(t, {}):
+                conflict_time = t
+                conflict_coord = id_to_coord(node)
+                conflicting_agent = time_window[t][node]
+                logs.append(f"⚠️ Conflict predicted for Agent {agent_id} at {conflict_coord} (t={t}) with Agent {conflicting_agent}.")
+                conflict_markers.setdefault(t, []).append(conflict_coord)
+                break
+        
+        # --- PATH DETERMINATION ---
+        final_path_ids = []
+        is_rerouted = False
+        reroute_data = {}
 
-        if not conflict_detected_for_agent:
-            # If no conflict, commit this agent's path to the time window
-            for t, node_id_on_path in enumerate(initial_path_ids):
-                if t >= MAX_TIME: break
-                time_window.setdefault(t, {})[node_id_on_path] = agent_config["id"]
-            results.append({
-                "id": agent_config["id"],
-                "path": path_to_coords(initial_path_ids),
-                "rerouted": False
-            })
-        else:
-            # Conflict detected, recalculate path using Dijkstra
-            logs.append(f"🔄 Rerouting Agent {agent_config['id']} from {id_to_coord(sid)} to {id_to_coord(gid)} due to conflict.")
+        if conflict_time == -1: # No conflict
+            logs.append(f"✅ Agent {agent_id}: Initial path is conflict-free.")
+            final_path_ids = initial_path_ids
+            is_rerouted = False
+        else: # Conflict found, must reroute
+            reroute_start_time = conflict_time - 1
+            reroute_start_node = initial_path_ids[reroute_start_time]
             
-            # Create the 'occupied' map for Dijkstra, considering all previously planned agents
-            # This is crucial: Dijkstra needs to know what nodes are occupied at what future times.
-            occupied_for_dijkstra = {
-                t_step: set(nodes_at_t.keys()) for t_step, nodes_at_t in time_window.items()
-            }
+            logs.append(f"🔄 Rerouting Agent {agent_id} from node {id_to_coord(reroute_start_node)} at t={reroute_start_time}.")
+
+            # Build occupied map for Dijkstra
+            occupied_for_dijkstra = {t: set(nodes.keys()) for t, nodes in time_window.items()}
             
-            # The agent needs to replan from its current position at `reroute_time`
-            # For simplicity, we assume the agent is still at its last non-conflicting node
-            # or its start if conflict is at t=0.
-            # A more sophisticated model would track actual agent positions.
-            # Here, we assume it's replanning from its original start node, but avoiding future conflicts.
+            new_path_segment = dijkstra_with_avoidance(
+                reroute_start_node, goal_id, reroute_start_time, occupied_for_dijkstra, max_path_len_estimate
+            )
             
-            # The paper says "local Dijkstra algorithm is used to adjust the path within a localized area."
-            # Our Dijkstra avoids specific nodes at specific times.
-            
-            new_path_ids = dijkstra_with_avoidance(sid, gid, occupied_for_dijkstra)
-            
-            # If a new path is found, commit it to the time window
-            if new_path_ids and len(new_path_ids) > 1:
-                for t, node_id_on_path in enumerate(new_path_ids):
-                    if t >= MAX_TIME: break
-                    time_window.setdefault(t, {})[node_id_on_path] = agent_config["id"]
+            if new_path_segment:
+                original_segment = initial_path_ids[:reroute_start_time]
+                # The new segment from Dijkstra starts at the reroute node, so it naturally connects
+                final_path_ids = original_segment + new_path_segment
+                is_rerouted = True
+                reroute_data = {
+                    "reroute_time": reroute_start_time,
+                    "original_segment": path_to_coords(original_segment),
+                    "dijkstra_segment": path_to_coords(new_path_segment)
+                }
+                logs.append(f"✅ Agent {agent_id} rerouted successfully. New path length: {len(final_path_ids)}.")
+            else: # Rerouting failed, agent will wait
+                logs.append(f"❌ Rerouting failed for Agent {agent_id}. Agent will wait at conflict point.")
+                # Simple wait strategy: stay at node before conflict
+                wait_time = 1 
+                path_before_conflict = initial_path_ids[:conflict_time]
+                path_after_conflict = initial_path_ids[conflict_time:]
                 
-                results.append({
-                    "id": agent_config["id"],
-                    "path": path_to_coords(new_path_ids),
-                    "rerouted": True,
-                    "reroute_time": reroute_time, # Time when rerouting was triggered
-                    "original": path_to_coords(initial_path_ids[:reroute_time]) # Part of original path before reroute
-                })
-                logs.append(f"✅ Agent {agent_config['id']} rerouted successfully. New path length: {len(new_path_ids)}")
-            else:
-                logs.append(f"❌ Agent {agent_config['id']}: Could not find an alternative path. Agent might be stuck or wait.")
-                # If no new path, agent effectively stays at its last valid position
-                results.append({
-                    "id": agent_config["id"],
-                    "path": path_to_coords(initial_path_ids), # Keep original path if no reroute found
-                    "rerouted": False # Mark as not rerouted if no valid new path
-                })
+                final_path_ids = path_before_conflict + [path_before_conflict[-1]] * wait_time + path_after_conflict
+                # For simplicity, we just log this and don't add complex wait-and-recheck logic
+                # The visualization will show the agent pausing.
+                is_rerouted = False # Technically not rerouted, just delayed.
+        
+        # Commit the final, conflict-free path to the master time_window
+        for t, node in enumerate(final_path_ids):
+            time_window.setdefault(t, {})[node] = agent_id
+        
+        agent_result = {
+            "id": agent_id,
+            "path": path_to_coords(final_path_ids),
+            "rerouted": is_rerouted,
+        }
+        if is_rerouted:
+            agent_result.update(reroute_data)
+        
+        final_agent_paths.append(agent_result)
 
-    return results, conflict_visuals, logs
+    # Determine actual max time for animation from the longest final path
+    max_time = 0
+    if final_agent_paths:
+        max_time = max(len(p["path"]) for p in final_agent_paths if p["path"])
+        
+    return final_agent_paths, conflict_markers, logs, max_time, next_node_matrix
 
-def animate_sim(agents_data, conflicts, logs):
+# --- VISUALIZATION ---
+
+def animate_sim(agents_data, conflicts, logs, max_time, next_node_matrix):
     """
     Animates the simulation results using Matplotlib.
     """
-    fig, ax = plt.subplots(figsize=(10, 10))
-    plt.subplots_adjust(bottom=0.15) # Make space for the slider
+    fig, ax = plt.subplots(figsize=(12, 12))
+    plt.subplots_adjust(bottom=0.15, left=0.05, right=0.95)
     ax.set_xlim(-0.5, COLS - 0.5)
     ax.set_ylim(-0.5, ROWS - 0.5)
     ax.set_aspect("equal")
-    plt.gca().invert_yaxis() # Invert y-axis to match typical grid (0,0) at top-left
-    ax.set_title("Hybrid Floyd-Dijkstra Agent Routing")
-
-    # Draw grid lines
-    for x in range(COLS + 1):
-        ax.axvline(x - 0.5, color='lightgray', lw=0.5)
-    for y in range(ROWS + 1):
-        ax.axhline(y - 0.5, color='lightgray', lw=0.5)
+    plt.gca().invert_yaxis()
+    ax.set_title("Hybrid Floyd-Dijkstra Warehouse Simulation")
+    ax.set_xticks(np.arange(-0.5, COLS, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, ROWS, 1), minor=True)
+    ax.grid(which='minor', color='lightgray', linestyle='-', linewidth=0.5)
 
     # Draw shelves
-    for y, x in SHELVES:
-        ax.add_patch(plt.Rectangle((x - 0.5, y - 0.5), 1, 1, color="black", alpha=0.7))
+    for r, c in SHELVES:
+        ax.add_patch(plt.Rectangle((c - 0.5, r - 0.5), 1, 1, color="black", alpha=0.8, zorder=2))
 
-    # Draw the full precalculated Floyd paths (before animation starts)
-    for i, agent in enumerate(agents_data):
+    # Draw the full pre-calculated Floyd paths as background
+    for i, agent_config in enumerate(AGENTS):
         color = COLORS[i % len(COLORS)]
-        if agent["path"]: # Ensure path exists
-            # Use the original path stored if rerouted, otherwise the main path
-            floyd_path_coords = agent["original"] if agent.get("rerouted") else agent["path"]
-            if floyd_path_coords:
-                ax.plot([x for _, x in floyd_path_coords], [y for y, _ in floyd_path_coords], 
-                        color=color, alpha=0.2, linestyle=':', linewidth=1) # Thinner, dotted line
+        start_id = node_id(*agent_config["start"])
+        goal_id = node_id(*agent_config["goal"])
+        
+        initial_floyd_ids = reconstruct_path(start_id, goal_id, next_node_matrix)
+        if initial_floyd_ids:
+            coords = path_to_coords(initial_floyd_ids)
+            ax.plot([c for r, c in coords], [r for r, c in coords], 
+                    color=color, alpha=0.3, linestyle=':', linewidth=2, zorder=1)
 
-    # Agent dots and labels
-    dots = []
-    labels = []
-    path_lines = [] # One line object per agent, to be updated dynamically
+    # Artists for animation
+    agent_dots = []
+    agent_labels = []
+    solid_path_lines = []
+    dashed_path_lines = []
     
     for i, agent in enumerate(agents_data):
-        color = COLORS[i % len(COLORS)] # Cycle through colors
+        color = COLORS[i % len(COLORS)]
+        start_r, start_c = agent["path"][0] if agent["path"] else (-1, -1)
         
-        # Initial position for the dot
-        start_y, start_x = agent["path"][0] if agent["path"] else (0,0)
-        dot, = ax.plot([start_x], [start_y], "o", color=color, markersize=12, zorder=5)
+        dot, = ax.plot([start_c], [start_r], "o", color=color, markersize=14, zorder=5)
+        label = ax.text(start_c, start_r, agent["id"], fontsize=9, ha='center', va='center', color='white', zorder=6, weight='bold')
+        solid_line, = ax.plot([], [], color=color, linewidth=2.5, alpha=0.7, zorder=3)
+        dashed_line, = ax.plot([], [], color=color, linewidth=2.5, linestyle='--', alpha=0.9, zorder=4)
         
-        # Initial position for the label
-        label = ax.text(start_x, start_y, agent["id"], fontsize=9, ha='center', va='center', color='white', zorder=6)
-        
-        dots.append(dot)
-        labels.append(label)
-        
-        # Initialize an empty line for each agent's path, will be updated in `update`
-        line, = ax.plot([], [], color=color, linewidth=2, alpha=0.5) # Default style
-        path_lines.append(line)
+        agent_dots.append(dot)
+        agent_labels.append(label)
+        solid_path_lines.append(solid_line)
+        dashed_path_lines.append(dashed_line)
 
-    time_text = ax.text(0.02, 0.98, "", transform=ax.transAxes, fontsize=12, verticalalignment='top')
-    conflict_rects = [] # To store rectangles for conflicts
+    time_text = ax.text(0.01, 0.98, "", transform=ax.transAxes, fontsize=14, verticalalignment='top', bbox=dict(boxstyle='round,pad=0.3', fc='wheat', alpha=0.5))
+    conflict_rects = []
 
-    # Timeline slider setup
-    ax_slider = plt.axes([0.1, 0.05, 0.8, 0.03], facecolor='lightgoldenrodyellow')
-    time_slider = Slider(ax_slider, 'Time', 0, MAX_TIME - 1, valinit=0, valstep=1)
+    # --- SLIDER AND UPDATE LOGIC ---
+    ax_slider = plt.axes([0.15, 0.05, 0.7, 0.03], facecolor='lightgoldenrodyellow')
+    time_slider = Slider(ax_slider, 'Time', 0, max_time -1, valinit=0, valstep=1)
 
     def update(frame):
-        """Update function for the animation."""
-        # Clear previous conflict rectangles
+        frame = int(frame)
+        # Clear previous conflict markers
         while conflict_rects:
             conflict_rects.pop().remove()
 
-        # Add new conflict rectangles for the current frame
+        # Add new conflict markers for the current frame
         if frame in conflicts:
-            for y, x in conflicts[frame]:
-                rect = plt.Rectangle((x - 0.5, y - 0.5), 1, 1, color='red', alpha=0.5, zorder=4)
+            for r, c in conflicts[frame]:
+                rect = plt.Rectangle((c - 0.5, r - 0.5), 1, 1, color='red', alpha=0.6, zorder=4, ec='black')
                 ax.add_patch(rect)
                 conflict_rects.append(rect)
 
-        # Update agent positions, labels, and paths
+        # Update agents
         for i, agent in enumerate(agents_data):
-            current_path_segment_coords = []
-            current_line_style = '-'
-            current_line_width = 2 # Default thickness for non-rerouted path
-            current_line_alpha = 0.5
-
-            if agent.get("rerouted"):
-                reroute_time = agent["reroute_time"]
-                original_segment_coords = agent["original"] # (y,x) coords of original path up to reroute_time-1
-                new_full_path_coords = agent["path"] # (y,x) coords of the entire new path
-
-                if frame < reroute_time:
-                    # Show original path segment up to current frame
-                    current_path_segment_coords = original_segment_coords[:frame + 1]
-                    current_line_style = '-'
-                    current_line_width = 2 # Original path thickness
-                    current_line_alpha = 0.5
-                else:
-                    # Show the original path segment up to reroute_time, then the new path segment
-                    path_before_reroute = original_segment_coords
-                    
-                    # Path segment after reroute (from the start of the new path)
-                    # Adjust index for new_full_path_coords as it starts from the reroute point
-                    idx_in_new_path = frame - reroute_time
-                    if idx_in_new_path >= 0 and idx_in_new_path < len(new_full_path_coords):
-                        path_after_reroute = new_full_path_coords[:idx_in_new_path + 1]
-                    else:
-                        path_after_reroute = new_full_path_coords # Show full new path if frame exceeds it
-
-                    # Concatenate paths. `original_segment_coords` ends at the node *before* reroute_time.
-                    # `new_full_path_coords` starts at the node *at* reroute_time.
-                    # So, direct concatenation is correct.
-                    current_path_segment_coords = path_before_reroute + path_after_reroute
-
-                    current_line_style = '--' # Rerouted path is dashed
-                    current_line_width = 3 # Rerouted path thickness (thicker)
-                    current_line_alpha = 0.8
-            else:
-                # Not rerouted, show full precalculated path up to current frame
-                full_path_coords = agent["path"]
-                current_path_segment_coords = full_path_coords[:frame + 1]
-                current_line_style = '-'
-                current_line_width = 2 # Original path thickness
-                current_line_alpha = 0.5
-
-            # Update path line data
-            if current_path_segment_coords:
-                path_lines[i].set_data([x for _, x in current_path_segment_coords], 
-                                       [y for y, _ in current_path_segment_coords])
-                path_lines[i].set_linestyle(current_line_style)
-                path_lines[i].set_linewidth(current_line_width)
-                path_lines[i].set_alpha(current_line_alpha)
-            else:
-                path_lines[i].set_data([], []) # Hide line if no path segment
-
-            # Update agent dot and label positions
             path = agent["path"]
-            if frame < len(path):
-                y, x = path[frame]
-                dots[i].set_data([x], [y])
-                labels[i].set_position((x, y))
-            else:
-                # Agent has reached its destination or simulation time exceeded path length
-                # Keep agent at its last position
-                if path:
-                    y, x = path[-1]
-                    dots[i].set_data([x], [y])
-                    labels[i].set_position((x, y))
-                else: # If path is empty (e.g., no path found)
-                    dots[i].set_data([], []) # Hide dot
-                    labels[i].set_text("") # Hide label
+            if not path: continue
 
-        time_text.set_text(f"Time: {frame}")
+            pos_idx = min(frame, len(path) - 1)
+            r, c = path[pos_idx]
+            agent_dots[i].set_data([c], [r])
+            agent_labels[i].set_position((c, r))
+            
+            # Draw path segments
+            if agent["rerouted"]:
+                reroute_time = agent["reroute_time"]
+                
+                # Solid part (original path before reroute)
+                solid_segment_end = min(frame + 1, reroute_time)
+                solid_coords = agent["original_segment"][:solid_segment_end]
+                if solid_coords:
+                    solid_path_lines[i].set_data([sc for sr, sc in solid_coords], [sr for sr, sc in solid_coords])
+                
+                # Dashed part (Dijkstra reroute)
+                if frame >= reroute_time:
+                    dashed_segment_end = frame - reroute_time + 1
+                    dashed_coords = agent["dijkstra_segment"][:dashed_segment_end]
+                    if dashed_coords:
+                         dashed_path_lines[i].set_data([dc for dr, dc in dashed_coords], [dr for dr, dc in dashed_coords])
+                else: # Clear dashed line if before reroute time
+                    dashed_path_lines[i].set_data([], [])
+
+            else: # Not rerouted, path is all solid
+                path_to_draw = path[:frame + 1]
+                solid_path_lines[i].set_data([sc for sr, sc in path_to_draw], [sr for sr, sc in path_to_draw])
         
-        # Return all artists that were modified
-        return dots + labels + path_lines + [time_text] + conflict_rects
+        time_text.set_text(f"Time: {frame}")
+        fig.canvas.draw_idle()
 
-    # Connect slider to update function
     time_slider.on_changed(update)
+    update(0) # Initial draw
 
-    # Initial call to update to draw the first frame
-    update(0)
+    # To create a playable animation file (e.g., mp4), uncomment the following lines:
+    # print("\nGenerating animation... This may take a moment.")
+    # ani = animation.FuncAnimation(fig, lambda f: update(f), frames=max_time, interval=200, blit=False)
+    # ani.save('hybrid_floyd_simulation.mp4', writer='ffmpeg', fps=5)
+    # print("Animation saved to hybrid_floyd_simulation.mp4")
 
-    # FuncAnimation is still needed for blitting, but the slider drives the frames.
-    ani = animation.FuncAnimation(fig, update, frames=MAX_TIME, interval=600, blit=False, repeat=False) # blit=False for dynamic artist management
-
-    plt.legend()
-    plt.grid(True)
     plt.show()
 
     print("\n--- Simulation Logs ---")
     print("\n".join(logs))
 
+
 if __name__ == "__main__":
-    # Ensure the global `adj` is available for `reconstruct_path`
-    adj = build_graph() 
-    
-    agents_data, conflict_map, conflict_logs = simulate_paths()
-    animate_sim(agents_data, conflict_map, conflict_logs)
+    agents_data, conflict_map, logs, max_time_val, next_node_m = simulate_paths()
+    if max_time_val > 0:
+        animate_sim(agents_data, conflict_map, logs, max_time_val, next_node_m)
+    else:
+        print("Simulation could not run as no paths were found for any agent.")
